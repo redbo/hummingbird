@@ -79,6 +79,7 @@ type ObjectRecord struct {
 
 // Client is an API interface to CloudFiles.
 type Client interface {
+	GetURL() string
 	PutAccount(headers map[string]string) *http.Response
 	PostAccount(headers map[string]string) *http.Response
 	// GetAccount reads the body of the response and converts it into a
@@ -100,6 +101,7 @@ type Client interface {
 	GetObject(container string, obj string, headers map[string]string) *http.Response
 	HeadObject(container string, obj string, headers map[string]string) *http.Response
 	DeleteObject(container string, obj string, headers map[string]string) *http.Response
+	Raw(method, urlAfterAccount string, headers map[string]string, body io.Reader) *http.Response
 }
 
 // ProxyClient is similar to Client except it also accepts an account parameter to its operations.  This is meant to be used by the proxy server.
@@ -123,6 +125,7 @@ type ProxyClient interface {
 	// ObjectRingFor returns the object ring for the given account/container or
 	// a response as to why the ring could not be returned.
 	ObjectRingFor(account string, container string) (ring.Ring, *http.Response)
+	ContainerRing() ring.Ring
 }
 
 // ContainerInfo is persisted in memcache via JSON; so this needs to continue to have public fields.

@@ -18,6 +18,7 @@ package proxyserver
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/troubling/hummingbird/common"
 	"github.com/troubling/hummingbird/common/srv"
@@ -52,7 +53,9 @@ func (server *ProxyServer) AccountGetHandler(writer http.ResponseWriter, request
 		resp = ctx.C.GetAccount(vars["account"], options, request.Header)
 	}
 	for k := range resp.Header {
-		writer.Header().Set(k, resp.Header.Get(k))
+		if !common.OwnerHeaders[strings.ToLower(k)] || ctx.StorageOwner {
+			writer.Header().Set(k, resp.Header.Get(k))
+		}
 	}
 	writer.WriteHeader(resp.StatusCode)
 	defer resp.Body.Close()
@@ -79,7 +82,9 @@ func (server *ProxyServer) AccountHeadHandler(writer http.ResponseWriter, reques
 		resp = ctx.C.HeadAccount(vars["account"], request.Header)
 	}
 	for k := range resp.Header {
-		writer.Header().Set(k, resp.Header.Get(k))
+		if !common.OwnerHeaders[strings.ToLower(k)] || ctx.StorageOwner {
+			writer.Header().Set(k, resp.Header.Get(k))
+		}
 	}
 	resp.Body.Close()
 	writer.WriteHeader(resp.StatusCode)
@@ -98,11 +103,16 @@ func (server *ProxyServer) AccountPostHandler(writer http.ResponseWriter, reques
 			return
 		}
 	}
-	if status, str := CheckMetadata(request, "Account"); status != http.StatusOK {
+	if status, str := common.CheckMetadata(request, "Account"); status != http.StatusOK {
 		writer.Header().Set("Content-Type", "text/html; charset=UTF-8")
 		writer.WriteHeader(status)
 		writer.Write([]byte(fmt.Sprintf("<html><h1>%s</h1><p>%s</p></html>", http.StatusText(status), str)))
 		return
+	}
+	for k := range request.Header {
+		if common.OwnerHeaders[strings.ToLower(k)] && !ctx.StorageOwner {
+			request.Header.Del(k)
+		}
 	}
 	defer ctx.InvalidateAccountInfo(vars["account"])
 	resp := ctx.C.PostAccount(vars["account"], request.Header)
@@ -128,11 +138,16 @@ func (server *ProxyServer) AccountPutHandler(writer http.ResponseWriter, request
 			return
 		}
 	}
-	if status, str := CheckMetadata(request, "Account"); status != http.StatusOK {
+	if status, str := common.CheckMetadata(request, "Account"); status != http.StatusOK {
 		writer.Header().Set("Content-Type", "text/html; charset=UTF-8")
 		writer.WriteHeader(status)
 		writer.Write([]byte(fmt.Sprintf("<html><h1>%s</h1><p>%s</p></html>", http.StatusText(status), str)))
 		return
+	}
+	for k := range request.Header {
+		if common.OwnerHeaders[strings.ToLower(k)] && !ctx.StorageOwner {
+			request.Header.Del(k)
+		}
 	}
 	defer ctx.InvalidateAccountInfo(vars["account"])
 	resp := ctx.C.PutAccount(vars["account"], request.Header)

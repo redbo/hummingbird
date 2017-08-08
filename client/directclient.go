@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -264,6 +265,10 @@ func (c *ProxyDirectClient) firstResponse(r ring.Ring, partition uint64, devToRe
 	returned := make(chan struct{})
 	defer close(returned)
 	devs := r.GetNodes(partition)
+	for i := range devs {
+		j := rand.Intn(i + 1)
+		devs[i], devs[j] = devs[j], devs[i]
+	}
 	more := r.GetMoreNodes(partition)
 
 	internalErrors := 0
@@ -401,6 +406,9 @@ func (c *proxyClient) DeleteObject(account string, container string, obj string,
 }
 func (c *proxyClient) ObjectRingFor(account string, container string) (ring.Ring, *http.Response) {
 	return c.pdc.ObjectRingFor(account, container, c.mc, c.lc)
+}
+func (c *proxyClient) ContainerRing() ring.Ring {
+	return c.pdc.ContainerRing
 }
 
 func (c *ProxyDirectClient) PutAccount(account string, headers http.Header) *http.Response {
@@ -939,6 +947,10 @@ type directClient struct {
 
 var _ Client = &directClient{}
 
+func (c *directClient) GetURL() string {
+	return "<direct>/" + c.account
+}
+
 func (c *directClient) PutAccount(headers map[string]string) *http.Response {
 	return c.pc.PutAccount(c.account, common.Map2Headers(headers))
 }
@@ -1077,6 +1089,10 @@ func (c *directClient) HeadObject(container string, obj string, headers map[stri
 
 func (c *directClient) DeleteObject(container string, obj string, headers map[string]string) *http.Response {
 	return c.pc.DeleteObject(c.account, container, obj, common.Map2Headers(headers))
+}
+
+func (c *directClient) Raw(method, urlAfterAccount string, headers map[string]string, body io.Reader) *http.Response {
+	return ResponseStub(http.StatusNotImplemented, "Raw requests not implemented for direct clients")
 }
 
 // NewDirectClient creates a new direct client with the given account name.
