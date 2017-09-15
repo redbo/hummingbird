@@ -748,13 +748,16 @@ type Replicator struct {
 	stats                   map[string]map[string]*DeviceStats
 	runningDevices          map[string]ReplicationDevice
 	updatingDevices         map[string]*updateDevice
+	nurseryDevices          map[string]*nurseryDevice
 	runningDevicesLock      sync.Mutex
 	logger                  srv.LowLevelLogger
 	objectRings             map[int]ring.Ring
+	objEngines              map[int]ObjectEngine
 	containerRing           ring.Ring
 	cancelCounts            map[string]int64
 	replicateConcurrencySem chan struct{}
 	updateConcurrencySem    chan struct{}
+	nurseryConcurrencySem   chan struct{}
 	updateStat              chan statUpdate
 	onceDone                chan struct{}
 	onceWaiting             int64
@@ -783,16 +786,30 @@ func (r *Replicator) cancelStalledDevices() {
 			delete(r.stats["object-updater"], key)
 		}
 	}
+
+	for key, nrd := range r.nurseryDevices {
+		stats, ok := r.stats["object-nursery"][key]
+		if ok && time.Since(stats.LastCheckin) > replicateDeviceTimeout {
+			nrd.cancel()
+			delete(r.nurseryDevices, key)
+			delete(r.stats["object-nursery"], key)
+		}
+	}
 }
 
 func (r *Replicator) verifyRunningDevices() {
 	r.runningDevicesLock.Lock()
 	defer r.runningDevicesLock.Unlock()
 	expectedDevices := make(map[string]bool)
-	for policy, ring := range r.objectRings {
-		ringDevices, err := ring.LocalDevices(r.port)
+	for policy, oring := range r.objectRings {
+		ringDevices, err := oring.LocalDevices(r.port)
 		if err != nil {
 			r.logger.Error("Error getting local devices from ring", zap.Error(err))
+			return
+		}
+		objEngine, ok := r.objEngines[policy]
+		if !ok {
+			r.logger.Error("Error finding engine for policy", zap.Int("policy", policy), zap.Error(err))
 			return
 		}
 		// look for devices that aren't running but should be
@@ -819,6 +836,14 @@ func (r *Replicator) verifyRunningDevices() {
 				}
 				go r.updatingDevices[key].updateLoop()
 			}
+			if _, ok := r.nurseryDevices[key]; !ok {
+				r.nurseryDevices[key] = newNurseryDevice(dev, oring.(ring.Ring), policy, r, objEngine)
+				r.stats["object-nursery"][key] = &DeviceStats{
+					LastCheckin: time.Now(), DeviceStarted: time.Now(),
+					Stats: map[string]int64{"Success": 0, "Failure": 0},
+				}
+				go r.nurseryDevices[key].stabilizeLoop()
+			}
 		}
 	}
 	// look for devices that are running but shouldn't be
@@ -832,6 +857,12 @@ func (r *Replicator) verifyRunningDevices() {
 		if _, found := expectedDevices[key]; !found {
 			ud.cancel()
 			delete(r.updatingDevices, key)
+		}
+	}
+	for key, nrd := range r.nurseryDevices {
+		if _, found := expectedDevices[key]; !found {
+			nrd.cancel()
+			delete(r.nurseryDevices, key)
 		}
 	}
 }
@@ -985,6 +1016,11 @@ func (r *Replicator) Run() {
 			r.logger.Error("Error getting local devices from ring", zap.Error(err))
 			return
 		}
+		objEngine, ok := r.objEngines[policy]
+		if !ok {
+			r.logger.Error("Error finding engine for policy", zap.Int("policy", policy), zap.Error(err))
+			return
+		}
 		for _, dev := range devices {
 			rd := newReplicationDevice(dev, policy, r)
 			key := rd.Key()
@@ -1000,7 +1036,13 @@ func (r *Replicator) Run() {
 				r.onceDone <- struct{}{}
 			}(r.updatingDevices[key])
 
-			r.onceWaiting += 2
+			r.nurseryDevices[key] = newNurseryDevice(dev, theRing, policy, r, objEngine)
+			go func(nrd *nurseryDevice) {
+				nrd.stabilizeDevice()
+				r.onceDone <- struct{}{}
+			}(r.nurseryDevices[key])
+
+			r.onceWaiting += 3
 		}
 	}
 	for r.onceWaiting > 0 {
@@ -1015,6 +1057,7 @@ func NewReplicator(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, srv
 	}
 	concurrency := int(serverconf.GetInt("object-replicator", "concurrency", 1))
 	updaterConcurrency := int(serverconf.GetInt("object-updater", "concurrency", 2))
+	nurseryConcurrency := int(serverconf.GetInt("object-nursery", "concurrency", 10))
 
 	logLevelString := serverconf.GetDefault("object-replicator", "log_level", "INFO")
 	logLevel := zap.NewAtomicLevel()
@@ -1031,12 +1074,15 @@ func NewReplicator(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, srv
 		reclaimAge:          int64(serverconf.GetInt("object-replicator", "reclaim_age", int64(common.ONE_WEEK))),
 		incomingLimitPerDev: int64(serverconf.GetInt("object-replicator", "incoming_limit", 3)),
 
-		runningDevices:          make(map[string]ReplicationDevice),
-		updatingDevices:         make(map[string]*updateDevice),
-		cancelCounts:            make(map[string]int64),
-		objectRings:             make(map[int]ring.Ring),
+		runningDevices:  make(map[string]ReplicationDevice),
+		updatingDevices: make(map[string]*updateDevice),
+		nurseryDevices:  make(map[string]*nurseryDevice),
+		cancelCounts:    make(map[string]int64),
+		objectRings:     make(map[int]ring.Ring),
+		//objectPolicies:          make(map[int]conf.Policy),
 		replicateConcurrencySem: make(chan struct{}, concurrency),
 		updateConcurrencySem:    make(chan struct{}, updaterConcurrency),
+		nurseryConcurrencySem:   make(chan struct{}, nurseryConcurrency),
 		updateStat:              make(chan statUpdate),
 		devices:                 make(map[string]bool),
 		partitions:              make(map[string]bool),
@@ -1046,6 +1092,7 @@ func NewReplicator(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, srv
 		stats: map[string]map[string]*DeviceStats{
 			"object-replicator": {},
 			"object-updater":    {},
+			"object-nursery":    {},
 		},
 	}
 
@@ -1054,15 +1101,19 @@ func NewReplicator(serverconf conf.Config, flags *flag.FlagSet) (srv.Daemon, srv
 		return nil, nil, fmt.Errorf("Unable to get hash prefix and suffix")
 	}
 	for _, policy := range conf.LoadPolicies() {
-		if policy.Type != "replication" {
+		if !(policy.Type == "replication" || policy.Type == "replication-nursery") {
 			continue
 		}
+		//replicator.objectPolicies[policy.Index] = policy
 		if replicator.objectRings[policy.Index], err = GetRing("object", hashPathPrefix, hashPathSuffix, policy.Index); err != nil {
 			return nil, nil, fmt.Errorf("Unable to load ring for Policy %d.", policy.Index)
 		}
 	}
 	if replicator.containerRing, err = GetRing("container", hashPathPrefix, hashPathSuffix, 0); err != nil {
 		return nil, nil, fmt.Errorf("Error loading container ring: %v", err)
+	}
+	if replicator.objEngines, err = BuildEngines(serverconf, flags); err != nil {
+		return nil, nil, err
 	}
 	if replicator.logger, err = srv.SetupLogger("object-replicator", &logLevel, flags); err != nil {
 		return nil, nil, fmt.Errorf("Error setting up logger: %v", err)

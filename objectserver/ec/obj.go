@@ -165,5 +165,9 @@ func (o *ecObject) Close() error {
 	return nil
 }
 
+func (o *ecObject) Stabilize() error {
+	return nil
+}
+
 // make sure these things satisfy interfaces at compile time
 var _ objectserver.Object = &ecObject{}

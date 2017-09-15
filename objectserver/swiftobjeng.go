@@ -100,6 +100,9 @@ func (o *SwiftObject) Repr() string {
 	}
 	return fmt.Sprintf("SwiftObject(%s)", o.hashDir)
 }
+func (o *SwiftObject) Stabilize() error {
+	return nil
+}
 
 func (o *SwiftObject) newFile(class string, size int64) (io.Writer, error) {
 	var err error
@@ -227,6 +230,10 @@ func (f *SwiftEngine) New(vars map[string]string, needData bool, asyncWG *sync.W
 		sor.metadata, _ = ObjectMetadata(sor.dataFile, sor.metaFile) // ignore errors if deleted
 	}
 	return sor, nil
+}
+
+func (f *SwiftEngine) GetNurseryObjects(device string, c chan Object, cancel chan struct{}) {
+	defer close(c)
 }
 
 var replicationDone = fmt.Errorf("Replication done")

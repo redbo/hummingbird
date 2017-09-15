@@ -104,6 +104,10 @@ func (f *ecEngine) New(vars map[string]string, needData bool, asyncWG *sync.Wait
 	return obj, nil
 }
 
+func (f *ecEngine) GetNurseryObjects(device string, c chan objectserver.Object, cancel chan struct{}) {
+	defer close(c)
+}
+
 func (f *ecEngine) ecFragGetHandler(writer http.ResponseWriter, request *http.Request) {
 	// vars := srv.GetVars(request)
 	srv.StandardResponse(writer, http.StatusNotImplemented)
