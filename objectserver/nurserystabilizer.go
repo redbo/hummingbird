@@ -67,7 +67,7 @@ type nurseryDevice struct {
 	oring     ring.Ring
 	canchan   chan struct{}
 	client    http.Client
-	objEngine ObjectEngine
+	objEngine NurseryObjectEngine
 }
 
 func (nrd *nurseryDevice) updateStat(stat string, amount int64) {
@@ -119,7 +119,7 @@ func (nrd *nurseryDevice) stabilizeDevice() {
 		nrd.r.logger.Error("[stabilizeDevice] Drive not mounted", zap.String("Device", nrd.dev.Device))
 		return
 	}
-	c := make(chan Object, 100)
+	c := make(chan ObjectStabilizer, 100)
 	cancel := make(chan struct{})
 	defer close(cancel)
 	go nrd.objEngine.GetNurseryObjects(nrd.dev.Device, c, cancel)
@@ -159,7 +159,11 @@ func (nrd *nurseryDevice) cancel() {
 	close(nrd.canchan)
 }
 
-var newNurseryDevice = func(dev *ring.Device, oring ring.Ring, policy int, r *Replicator, objEngine ObjectEngine) *nurseryDevice {
+var newNurseryDevice = func(dev *ring.Device, oring ring.Ring, policy int, r *Replicator, objEngine ObjectEngine) (*nurseryDevice, error) {
+	noe, ok := objEngine.(NurseryObjectEngine)
+	if !ok {
+		return nil, fmt.Errorf("Not a nursery object engine")
+	}
 	return &nurseryDevice{
 		r:         r,
 		dev:       dev,
@@ -168,6 +172,6 @@ var newNurseryDevice = func(dev *ring.Device, oring ring.Ring, policy int, r *Re
 		passStart: time.Now(),
 		canchan:   make(chan struct{}),
 		client:    http.Client{Timeout: 10 * time.Second},
-		objEngine: objEngine,
-	}
+		objEngine: noe,
+	}, nil
 }

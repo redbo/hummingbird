@@ -54,6 +54,10 @@ type Object interface {
 	Close() error
 	// Repr returns a representation of the object, used for logging.
 	Repr() string
+}
+
+type ObjectStabilizer interface {
+	Object
 	// Stabilize object- move to stable location / erasure code / do nothing / etc
 	Stabilize() error
 }
@@ -62,7 +66,11 @@ type Object interface {
 type ObjectEngine interface {
 	// New creates a new instance of the Object, for interacting with a single object.
 	New(vars map[string]string, needData bool, asyncWG *sync.WaitGroup) (Object, error)
-	GetNurseryObjects(device string, c chan Object, cancel chan struct{})
+}
+
+type NurseryObjectEngine interface {
+	ObjectEngine
+	GetNurseryObjects(device string, c chan ObjectStabilizer, cancel chan struct{})
 }
 
 type PolicyHandlerRegistrator interface {

@@ -837,12 +837,13 @@ func (r *Replicator) verifyRunningDevices() {
 				go r.updatingDevices[key].updateLoop()
 			}
 			if _, ok := r.nurseryDevices[key]; !ok {
-				r.nurseryDevices[key] = newNurseryDevice(dev, oring.(ring.Ring), policy, r, objEngine)
-				r.stats["object-nursery"][key] = &DeviceStats{
-					LastCheckin: time.Now(), DeviceStarted: time.Now(),
-					Stats: map[string]int64{"Success": 0, "Failure": 0},
+				if r.nurseryDevices[key], err = newNurseryDevice(dev, oring.(ring.Ring), policy, r, objEngine); err != nil {
+					r.stats["object-nursery"][key] = &DeviceStats{
+						LastCheckin: time.Now(), DeviceStarted: time.Now(),
+						Stats: map[string]int64{"Success": 0, "Failure": 0},
+					}
+					go r.nurseryDevices[key].stabilizeLoop()
 				}
-				go r.nurseryDevices[key].stabilizeLoop()
 			}
 		}
 	}
@@ -1036,13 +1037,15 @@ func (r *Replicator) Run() {
 				r.onceDone <- struct{}{}
 			}(r.updatingDevices[key])
 
-			r.nurseryDevices[key] = newNurseryDevice(dev, theRing, policy, r, objEngine)
-			go func(nrd *nurseryDevice) {
-				nrd.stabilizeDevice()
-				r.onceDone <- struct{}{}
-			}(r.nurseryDevices[key])
+			r.onceWaiting += 2
 
-			r.onceWaiting += 3
+			if r.nurseryDevices[key], err = newNurseryDevice(dev, theRing, policy, r, objEngine); err != nil {
+				go func(nrd *nurseryDevice) {
+					nrd.stabilizeDevice()
+					r.onceDone <- struct{}{}
+				}(r.nurseryDevices[key])
+				r.onceWaiting += 1
+			}
 		}
 	}
 	for r.onceWaiting > 0 {
